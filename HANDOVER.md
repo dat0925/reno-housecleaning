@@ -1,8 +1,9 @@
 # reno-housecleaning HANDOVER.md
 
 ## プロジェクト概要
-ハウスクリーニング業者向け ビフォーアフター見積もりツール(RENO派生)。
+片付け系ビフォーアフター提案AI(仮称 RENO Multi)。第一弾はハウスクリーニング業者向け ビフォーアフター見積もりツール(RENO派生)。
 起案書: `docs/起案書.md` 参照。
+公開URL: https://dat0925.github.io/reno-housecleaning/
 
 ## 開発体制(重要)
 - Claude担当(全体の7割想定): AIチャットヒアリング、ビフォーアフター画像生成、概算見積もりロジック、PDF提案書生成、フロントエンドUI
@@ -10,29 +11,38 @@
 - → 実装時は認証・契約まわりをなるべく疎結合に保ち、開発部が後から差し込みやすい設計にすること
 
 ## インフラ構成
-- Supabase: 共有プロジェクト `sfhtvtcmgueystyuhzvd`(Taskra/Tavera/RENOと共有)を使用
-- テーブルprefix: 他アプリと混在しないよう `housecleaning_` に統一
-  - 例: `housecleaning_users`, `housecleaning_quotes`, `housecleaning_usage`
-  - 新規テーブルは必ずCREATE TABLE文と同じマイグレーション内でRLSを有効化すること(RENO本体で過去にRLS漏れが発生した実績あり。同じミスをしない)
-- ホスティング: GitHub Pages(このリポジトリ)
-- AIプロキシ: RENO本体と同様、Supabase Edge Function経由でサーバーサイドから呼び出す想定(Edge Function名は仮に `housecleaning-agent`。secretキーはEdge Function側にのみ保持し、フロントには一切露出させない)
+- Supabase: 共有プロジェクト `sfhtvtcmgueystyuhzvd`(Taskra/Tavera/RENOと共有)
+- テーブルprefix: `housecleaning_`(現状: `housecleaning_usage`のみ。RLS有効化済み)
+- ホスティング: GitHub Pages(このリポジトリ、mainブランチ直下)
+- Edge Function: `housecleaning-agent`(verify_jwt: false、gpt-image-1でビフォーアフター画像生成。OPENAI_API_KEY/SB_SERVICE_ROLE_KEYは既存のものを流用、新規シークレット追加なし)
+- 認証: 現状なし。匿名device_id(localStorage生成のuuid)でEdge Functionの月間利用回数のみ制御(housecleaning_usage、月5回まで無料)
 
-## 参考にしたRENO本体(dat0925/reno)の実装パターン
-- 単一 `index.html` 構成、GitHub Pagesで公開
-- チップ選択式のヒアリングUI(`.chip` / `.qf-chip`)
-- jsPDF + html2canvasでビフォーアフター画像入りのPDF提案書を生成
-- 認証はGoogle OAuth(管理者)+ PIN(ゲスト)の二本立て
+## 実装済み機能(2026-07-08時点)
+1. **業種選択チャット**: 最初に「どのサービスについてご相談ですか?」と聞き、business-types.jsのlabelから選択
+2. **ヒアリングチャット**: 業種ごとのhearingQuestions(チップ選択+自由入力対応)を順番に質問
+3. **概算見積もり**: costModel(baseFee + perTsuboFee×坪数 × multiplier)で自動計算。坪数はROOM_SIZE_TSUBOマッピングを使用
+4. **ビフォーアフター画像生成**: ハウスクリーニング・遺品整理/生前整理のみ対応(housecleaning-agent Edge Function経由)。特殊清掃は現場写真がセンシティブなため非対応、見積もりのみ
+5. **PDF提案書生成**: jsPDF + html2canvas(RENOと同方式)。画像がない場合(特殊清掃)は画像セクションを非表示にして生成
+6. **リセット機能**: 見積もり後に「最初からやり直す」ボタン、自由入力での「やり直し」等のキーワードにも対応
 
-## 業種コンフィグ設計方針
-将来的に「片付け系・ビフォーアフターが成立する業種」(遺品整理・生前整理等)へ展開できるよう、ヒアリング項目・見積もりロジック・サンプル画像を業種ごとのコンフィグとして分離する。
-第一弾はハウスクリーニング設定のみ実装。`config/business-types.js` 参照。
+## 対応業種(config/business-types.js)
+- `housecleaning`(ハウスクリーニング): 画像生成対応
+- `estateCleanup`(遺品整理・生前整理): 画像生成対応
+- `specialCleaning`(特殊清掃): 画像生成非対応(見積もりのみ)
+- 新しい業種を追加する場合はBUSINESS_TYPESにキーを追加するだけで良い設計。ROOM_SIZE_TSUBOに無いサイズ表現は坪数15にフォールバックされる点に注意
 
-## 進捗ログ
-- 2026-07-08: リポジトリ作成、起案書格納、HANDOVER.md作成、業種コンフィグ雛形(ハウスクリーニング分)作成
+## 未実装・既知の課題(重要: マネタイズ観点)
+2026-07-08にMasamuneさんと議論。現状のMVPは「顧客が使って終わり」で、業者側に問い合わせ情報が一切届かない状態。**このままでは業者から月額をいただくには弱い**という結論。月額を正当化するために必要な機能(優先度順、未着手):
 
-## 次にやること
-1. `config/business-types.js` のハウスクリーニング設定をもとに、ヒアリングチャットUIを実装(index.html)
-2. ビフォーアフター画像生成のAPI連携(Edge Function経由、secretキーはEdge Function側のみ)
-3. 概算見積もりロジックの実装(costModelをベースに調整)
-4. PDF提案書テンプレートの実装(RENOのgeneratePDFを参考に移植)
-5. Supabaseに `housecleaning_` prefixのテーブルを設計・作成(RLS必須)
+1. **リード獲得フォーム**: PDF作成前に「お名前・電話番号 or LINE・希望連絡時間」を入力してもらう
+2. **業者への通知**: まずメール通知(Resend等、無料枠あり)で検証。LINE公式アカウントは本格運用段階で導入(理由: 職人・零細事業者はメールを見ない人が多く、LINEの方が追客に直結するため)
+   - ただし将来LINE化する場合は「1つの共有LINE公式アカウントに複数業者が紐づく」マルチテナント設計になる(LINE MAエージェントと同じ発想。業者ごとのLINE User ID紐付けテーブルが必要)
+3. **業者向け簡易ログイン・問い合わせ一覧画面**: RENOと同じ軽量PIN方式でOK。本格的なユーザー管理(開発部範囲)とは別に、MVP検証用の簡易ダッシュボードとして
+4. **業者ごとのブランディング**(会社名・電話番号・対応エリアの差し替え): 複数業者へのヨコ展開を見据える場合に必要
+
+## 次にやること(優先度順)
+1. メール通知つきリード獲得フォームの実装(Resend連携。PDF作成前に連絡先入力を挟む導線)
+2. 業者向け簡易ログイン・問い合わせ一覧画面(RENO同様のPIN方式)
+3. 実際の事業者にヒアリングし、costModelの単価を実データに更新
+4. 起案書の収益モデル・原価内訳(現状は仮の試算値)を実数値に更新
+5. (将来)LINE公式アカウントによるマルチテナント通知への移行

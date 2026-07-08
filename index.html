@@ -243,6 +243,13 @@ function selectChip(label) {
 function handleFreeText() {
   const text = textInput.value.trim();
   if (!text) return;
+
+  if (RESET_KEYWORDS.some(k => text.includes(k))) {
+    textInput.value = '';
+    resetFlow();
+    return;
+  }
+
   addMessage(text, 'user');
   state.freeNotes.push(text);
   textInput.value = '';
@@ -458,6 +465,7 @@ function finishHearing() {
       const promptHint = `対応内容: ${state.answers[config.multiplierQuestionId] || '指定なし'}`;
       generateBeforeAfter(file, promptHint, resultBox);
     });
+    appendRestartButton(card);
   } else {
     // 特殊清掃などビフォーアフター画像を提供しない業種: 見積もりのみ+画像なしPDF
     const pdfBtnId = `pdf-btn-${Date.now()}`;
@@ -471,8 +479,40 @@ function finishHearing() {
     chatArea.appendChild(card);
     chatArea.scrollTop = chatArea.scrollHeight;
     card.querySelector(`#${pdfBtnId}`).addEventListener('click', (e) => generatePDF(e.target));
+    appendRestartButton(card);
   }
 }
+
+// 見積もりカードの下に「最初からやり直す」ボタンを追加する
+function appendRestartButton(card) {
+  const btn = document.createElement('button');
+  btn.className = 'cta-btn';
+  btn.style.background = '#ffffff';
+  btn.style.color = '#2f8f8a';
+  btn.style.border = '1px solid #2f8f8a';
+  btn.style.marginTop = '10px';
+  btn.textContent = '🔄 最初からやり直す';
+  btn.onclick = resetFlow;
+  card.appendChild(btn);
+}
+
+// チャット・見積もり状態をすべてリセットし、業種選択からやり直す
+function resetFlow() {
+  state.mode = 'selectType';
+  state.businessTypeKey = null;
+  state.step = 0;
+  state.answers = {};
+  state.freeNotes = [];
+  state.images = null;
+  config = null;
+  chatArea.innerHTML = '';
+  chipArea.innerHTML = '';
+  addMessage('最初からやり直しますね。', 'bot');
+  askBusinessTypeQuestion();
+}
+
+// 自由入力で「やり直し」等のキーワードが入力された場合もリセットとして扱う
+const RESET_KEYWORDS = ['やり直し', 'やりなおし', 'リセット', '最初から'];
 
 // 初期メッセージ
 addMessage('こんにちは!ご相談内容についていくつか質問させてください。', 'bot');

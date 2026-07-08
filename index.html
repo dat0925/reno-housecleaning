@@ -134,7 +134,7 @@ body{
 
     <table id="pdf-info-table" style="width:100%;border-collapse:collapse;margin-bottom:24px;"></table>
 
-    <div style="display:flex;gap:16px;margin-bottom:24px;">
+    <div id="pdf-image-section" style="display:flex;gap:16px;margin-bottom:24px;">
       <div style="flex:1;">
         <div style="font-size:10px;color:#93a19e;letter-spacing:0.1em;margin-bottom:6px;">BEFORE</div>
         <img id="pdf-before-img" style="width:100%;border-radius:8px;display:block;" />
@@ -159,33 +159,27 @@ body{
 
 <script>
 /* =========================================================
-   ハウスクリーニング ヒアリングチャット MVP
-   business-types.js の設定を元に、質問→チップ回答→次の質問…と進行し、
+   片付け系ビフォーアフター提案AI ヒアリングチャット MVP
+   business-types.js の設定を元に、業種選択→質問→チップ回答→…と進行し、
    最後に概算見積もりのサマリーを表示する。
-   AI連携(自然文解析・画像生成・PDF出力)は次フェーズで追加予定。
+   ハウスクリーニング/遺品整理・生前整理はビフォーアフター画像生成に対応。
+   特殊清掃は現場写真がセンシティブなため、見積もりのみ対応(画像生成なし)。
    ========================================================= */
-
-const BUSINESS_TYPE_KEY = 'housecleaning';
-const config = BUSINESS_TYPES[BUSINESS_TYPE_KEY];
 
 const chatArea = document.getElementById('chatArea');
 const chipArea = document.getElementById('chipArea');
 const textInput = document.getElementById('textInput');
 
 const state = {
+  mode: 'selectType',   // 'selectType' → 'hearing' → 'done'
+  businessTypeKey: null,
   step: 0,
-  answers: {},       // { room_type: 'キッチン', room_size: '2LDK', ... }
-  freeNotes: []       // 自由入力で補足されたテキストをすべて保持
+  answers: {},
+  freeNotes: [],
+  images: null
 };
 
-// 部屋の広さ(チップのラベル)→ 概算坪数のマッピング。
-// 見積もりロジックの簡易版。実際の単価・係数はconfigのcostModelで一元管理する。
-const ROOM_SIZE_TSUBO = {
-  '1R/1K': 8,
-  '1LDK': 15,
-  '2LDK': 25,
-  '3LDK以上': 35
-};
+let config = null; // 業種選択後にBUSINESS_TYPES[key]がセットされる
 
 function addMessage(text, sender) {
   const msg = document.createElement('div');
@@ -210,6 +204,12 @@ function renderChips(chips) {
   });
 }
 
+function askBusinessTypeQuestion() {
+  addMessage('どのサービスについてご相談ですか?', 'bot');
+  const labels = Object.values(BUSINESS_TYPES).map(t => t.label);
+  renderChips(labels);
+}
+
 function askCurrentQuestion() {
   const q = config.hearingQuestions[state.step];
   if (!q) {
@@ -221,6 +221,17 @@ function askCurrentQuestion() {
 }
 
 function selectChip(label) {
+  if (state.mode === 'selectType') {
+    const key = Object.keys(BUSINESS_TYPES).find(k => BUSINESS_TYPES[k].label === label);
+    state.businessTypeKey = key;
+    config = BUSINESS_TYPES[key];
+    state.mode = 'hearing';
+    addMessage(label, 'user');
+    chipArea.innerHTML = '';
+    setTimeout(askCurrentQuestion, 300);
+    return;
+  }
+
   const q = config.hearingQuestions[state.step];
   addMessage(label, 'user');
   state.answers[q.id] = label;
@@ -236,6 +247,8 @@ function handleFreeText() {
   state.freeNotes.push(text);
   textInput.value = '';
 
+  if (state.mode !== 'hearing') return;
+
   // 現在の質問にチップ以外の回答(自由入力)があった場合はそのまま回答として採用する
   const q = config.hearingQuestions[state.step];
   if (q && !state.answers[q.id]) {
@@ -250,10 +263,12 @@ textInput.addEventListener('keydown', (e) => {
 });
 
 function estimateCost(answers) {
-  const { baseFee, perTsuboFee, concernMultiplier } = config.costModel;
-  const tsubo = ROOM_SIZE_TSUBO[answers.room_size] || 15;
-  const multiplier = concernMultiplier[answers.concern] ?? 1.0;
-  const raw = (baseFee + perTsuboFee * tsubo) * multiplier;
+  const { baseFee, perTsuboFee, multiplier } = config.costModel;
+  const sizeAnswer = answers[config.sizeQuestionId];
+  const multiplierAnswer = answers[config.multiplierQuestionId];
+  const tsubo = ROOM_SIZE_TSUBO[sizeAnswer] || 15;
+  const m = multiplier[multiplierAnswer] ?? 1.0;
+  const raw = (baseFee + perTsuboFee * tsubo) * m;
   // 100円単位で丸め
   return Math.round(raw / 100) * 100;
 }
@@ -283,12 +298,7 @@ async function generatePDF(triggerBtn) {
       new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
 
     const estimated = estimateCost(state.answers);
-    const fields = [
-      ['掃除箇所', state.answers.room_type || '—'],
-      ['広さの目安', state.answers.room_size || '—'],
-      ['気になる汚れ', state.answers.concern || '—'],
-      ['希望時期', state.answers.timing || '—'],
-    ];
+    const fields = config.hearingQuestions.map(q => [q.label, state.answers[q.id] || '—']);
     document.getElementById('pdf-info-table').innerHTML = fields.map(([label, val]) => `
       <tr style="border-bottom:1px solid #e5ece9;">
         <td style="padding:9px 0;color:#93a19e;font-size:10.5px;letter-spacing:0.08em;width:130px;">${label}</td>
@@ -296,8 +306,15 @@ async function generatePDF(triggerBtn) {
       </tr>`).join('');
 
     document.getElementById('pdf-amount').textContent = `¥${estimated.toLocaleString()}`;
-    document.getElementById('pdf-before-img').src = state.images?.before || '';
-    document.getElementById('pdf-after-img').src = state.images?.after || '';
+
+    const imageSection = document.getElementById('pdf-image-section');
+    if (state.images) {
+      imageSection.style.display = 'flex';
+      document.getElementById('pdf-before-img').src = state.images.before || '';
+      document.getElementById('pdf-after-img').src = state.images.after || '';
+    } else {
+      imageSection.style.display = 'none';
+    }
 
     // 画像の読み込み待ち
     await new Promise((r) => setTimeout(r, 500));
@@ -329,7 +346,7 @@ async function generatePDF(triggerBtn) {
       }
     }
 
-    doc.save(`ハウスクリーニング-お見積もり-${Date.now()}.pdf`);
+    doc.save(`${config.label}-お見積もり-${Date.now()}.pdf`);
   } catch (err) {
     alert('PDFの生成に失敗しました。時間をおいて再度お試しください。');
   } finally {
@@ -405,44 +422,61 @@ async function generateBeforeAfter(file, promptHint, resultBox) {
 }
 
 function finishHearing() {
+  state.mode = 'done';
   addMessage('ありがとうございます、内容をもとに概算お見積もりを作成しますね。', 'bot');
 
   const estimated = estimateCost(state.answers);
-  const uploadId = `ba-upload-${Date.now()}`;
-  const resultId = `ba-result-${Date.now()}`;
+  const summaryRows = config.hearingQuestions
+    .map(q => `<div class="summary-row"><span>${q.label}</span><span>${state.answers[q.id] || '-'}</span></div>`)
+    .join('');
 
   const card = document.createElement('div');
   card.className = 'summary-card';
-  card.innerHTML = `
-    <h3>概算お見積もり</h3>
-    <div class="summary-row"><span>掃除箇所</span><span>${state.answers.room_type || '-'}</span></div>
-    <div class="summary-row"><span>広さの目安</span><span>${state.answers.room_size || '-'}</span></div>
-    <div class="summary-row"><span>気になる汚れ</span><span>${state.answers.concern || '-'}</span></div>
-    <div class="summary-row"><span>希望時期</span><span>${state.answers.timing || '-'}</span></div>
-    <div class="summary-total"><span>概算費用</span><span class="amount">¥${estimated.toLocaleString()}</span></div>
-    <div class="summary-note">※実際の状態を確認後、正式なお見積もりをご案内します。</div>
-    <div class="ba-upload">
-      <label for="${uploadId}">📷 掃除したい場所の写真をアップロードして、きれいになったイメージを見る</label>
-      <input type="file" id="${uploadId}" accept="image/*" capture="environment" />
-    </div>
-    <div id="${resultId}"></div>
-  `;
-  chatArea.appendChild(card);
-  chatArea.scrollTop = chatArea.scrollHeight;
 
-  const fileInput = card.querySelector(`#${uploadId}`);
-  const resultBox = card.querySelector(`#${resultId}`);
-  fileInput.addEventListener('change', () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    const promptHint = `汚れの種類: ${state.answers.concern || '指定なし'}`;
-    generateBeforeAfter(file, promptHint, resultBox);
-  });
+  if (config.supportsImageGeneration) {
+    const uploadId = `ba-upload-${Date.now()}`;
+    const resultId = `ba-result-${Date.now()}`;
+    card.innerHTML = `
+      <h3>概算お見積もり</h3>
+      ${summaryRows}
+      <div class="summary-total"><span>概算費用</span><span class="amount">¥${estimated.toLocaleString()}</span></div>
+      <div class="summary-note">※実際の状態を確認後、正式なお見積もりをご案内します。</div>
+      <div class="ba-upload">
+        <label for="${uploadId}">📷 現場の写真をアップロードして、きれいになったイメージを見る</label>
+        <input type="file" id="${uploadId}" accept="image/*" capture="environment" />
+      </div>
+      <div id="${resultId}"></div>
+    `;
+    chatArea.appendChild(card);
+    chatArea.scrollTop = chatArea.scrollHeight;
+
+    const fileInput = card.querySelector(`#${uploadId}`);
+    const resultBox = card.querySelector(`#${resultId}`);
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const promptHint = `対応内容: ${state.answers[config.multiplierQuestionId] || '指定なし'}`;
+      generateBeforeAfter(file, promptHint, resultBox);
+    });
+  } else {
+    // 特殊清掃などビフォーアフター画像を提供しない業種: 見積もりのみ+画像なしPDF
+    const pdfBtnId = `pdf-btn-${Date.now()}`;
+    card.innerHTML = `
+      <h3>概算お見積もり</h3>
+      ${summaryRows}
+      <div class="summary-total"><span>概算費用</span><span class="amount">¥${estimated.toLocaleString()}</span></div>
+      <div class="summary-note">※現場の状態は個別性が高いため、実際にご訪問・確認のうえ正式な金額をご案内します。この業種ではビフォーアフター画像のご案内は行っておりません。</div>
+      <button class="cta-btn" id="${pdfBtnId}">📄 PDF見積書を作成する</button>
+    `;
+    chatArea.appendChild(card);
+    chatArea.scrollTop = chatArea.scrollHeight;
+    card.querySelector(`#${pdfBtnId}`).addEventListener('click', (e) => generatePDF(e.target));
+  }
 }
 
 // 初期メッセージ
-addMessage('こんにちは!ハウスクリーニングのご相談ですね。いくつか質問させてください。', 'bot');
-askCurrentQuestion();
+addMessage('こんにちは!ご相談内容についていくつか質問させてください。', 'bot');
+askBusinessTypeQuestion();
 </script>
 </body>
 </html>

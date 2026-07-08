@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>業者管理画面 | クリーンAI見積もり</title>
+<script src="config/business-types.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
+:root{
+  --bg:#f6faf9;--white:#ffffff;--text:#1a2422;--text2:#4a5654;--muted:#93a19e;
+  --border:#dfe9e7;--border2:#c9d8d5;--teal:#2f8f8a;--teal-bg:#eef8f7;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);font-family:'DM Sans','Hiragino Sans',sans-serif;color:var(--text);padding:20px;padding-bottom:60px;}
+h1{font-size:17px;margin-bottom:4px;}
+.sub{font-size:12px;color:var(--muted);margin-bottom:20px;}
+label{display:block;font-size:12px;color:var(--text2);margin:14px 0 6px;letter-spacing:0.04em;}
+input[type=text], input[type=password], input[type=number], textarea{
+  width:100%;padding:10px 12px;border:1px solid var(--border2);border-radius:8px;
+  font-size:14px;font-family:inherit;background:var(--white);
+}
+textarea{min-height:120px;resize:vertical;}
+.section{background:var(--white);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;}
+.section h2{font-size:13px;color:var(--teal);margin-bottom:4px;}
+.price-row{display:flex;gap:8px;align-items:center;margin-top:8px;}
+.price-row label{margin:0;flex-shrink:0;width:110px;font-size:12px;}
+.price-row input{width:100px;}
+button.primary{
+  width:100%;padding:13px;margin-top:20px;border:none;border-radius:10px;
+  background:var(--teal);color:#fff;font-size:14px;font-weight:500;font-family:inherit;
+}
+.msg{font-size:12.5px;margin-top:10px;padding:10px;border-radius:8px;}
+.msg.ok{background:var(--teal-bg);color:var(--teal);}
+.msg.err{background:#fdecec;color:#c0504a;}
+.share-url{font-size:12px;color:var(--text2);background:var(--teal-bg);padding:10px;border-radius:8px;margin-top:10px;word-break:break-all;}
+</style>
+</head>
+<body>
+
+<h1>業者管理画面</h1>
+<div class="sub">貴社のプロフィール・料金設定を保存すると、専用URLでお客様にご案内できます</div>
+
+<div class="section">
+  <h2>ログイン情報</h2>
+  <label>業者ID(半角英数、URLの一部になります)</label>
+  <input type="text" id="slug" placeholder="例: yamada-cleaning" />
+  <label>管理用PIN(4桁以上、初回は新規登録になります)</label>
+  <input type="password" id="pin" placeholder="例: 1234" />
+</div>
+
+<div class="section">
+  <h2>基本情報</h2>
+  <label>事業者名</label>
+  <input type="text" id="businessName" placeholder="例: 山田ハウスクリーニング" />
+  <label>対応エリア(自由記述、チャットでの質問に使われます)</label>
+  <textarea id="serviceArea" placeholder="例: 東京都内23区、埼玉県南部。出張費は江戸川区内無料、その他+2,000円"></textarea>
+  <label>料金表・サービス内容(自由記述、資料をそのまま貼り付けてOK)</label>
+  <textarea id="rawNotes" placeholder="例: エアコンクリーニング1台8,000円〜、水回りセット15,000円〜、キャンセルは前日まで無料 など"></textarea>
+</div>
+
+<div class="section" id="priceSection">
+  <h2>料金の上書き(空欄なら標準料金を使用)</h2>
+</div>
+
+<button class="primary" id="saveBtn">保存する</button>
+<div id="resultMsg"></div>
+
+<script>
+const EDGE_URL = 'https://sfhtvtcmgueystyuhzvd.supabase.co/functions/v1/housecleaning-agent';
+
+const priceSection = document.getElementById('priceSection');
+Object.keys(BUSINESS_TYPES).forEach(key => {
+  const cfg = BUSINESS_TYPES[key];
+  const block = document.createElement('div');
+  block.innerHTML = `
+    <div style="font-size:12.5px;font-weight:500;margin-top:10px;">${cfg.label}</div>
+    <div class="price-row">
+      <label>基本料金</label>
+      <input type="number" id="base_${key}" placeholder="標準: ¥${cfg.costModel.baseFee.toLocaleString()}" />
+    </div>
+    <div class="price-row">
+      <label>坪あたり</label>
+      <input type="number" id="tsubo_${key}" placeholder="標準: ¥${cfg.costModel.perTsuboFee.toLocaleString()}" />
+    </div>
+  `;
+  priceSection.appendChild(block);
+});
+
+async function loadExisting() {
+  const slug = document.getElementById('slug').value.trim();
+  if (!slug) return;
+  const res = await fetch(EDGE_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'get_profile', business_slug: slug }),
+  });
+  const data = await res.json();
+  if (data.profile) {
+    document.getElementById('businessName').value = data.profile.business_name || '';
+    document.getElementById('serviceArea').value = data.profile.service_area || '';
+    document.getElementById('rawNotes').value = data.profile.raw_notes || '';
+    const overrides = data.profile.price_overrides || {};
+    Object.keys(BUSINESS_TYPES).forEach(key => {
+      if (overrides[key]?.baseFee != null) document.getElementById(`base_${key}`).value = overrides[key].baseFee;
+      if (overrides[key]?.perTsuboFee != null) document.getElementById(`tsubo_${key}`).value = overrides[key].perTsuboFee;
+    });
+  }
+}
+document.getElementById('slug').addEventListener('blur', loadExisting);
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const slug = document.getElementById('slug').value.trim();
+  const pin = document.getElementById('pin').value.trim();
+  const businessName = document.getElementById('businessName').value.trim();
+  const resultMsg = document.getElementById('resultMsg');
+
+  if (!slug || !pin || !businessName) {
+    resultMsg.innerHTML = '<div class="msg err">業者ID・PIN・事業者名は必須です</div>';
+    return;
+  }
+
+  const priceOverrides = {};
+  Object.keys(BUSINESS_TYPES).forEach(key => {
+    const base = document.getElementById(`base_${key}`).value;
+    const tsubo = document.getElementById(`tsubo_${key}`).value;
+    if (base || tsubo) {
+      priceOverrides[key] = {};
+      if (base) priceOverrides[key].baseFee = Number(base);
+      if (tsubo) priceOverrides[key].perTsuboFee = Number(tsubo);
+    }
+  });
+
+  try {
+    const res = await fetch(EDGE_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'save_profile',
+        business_slug: slug,
+        admin_pin: pin,
+        business_name: businessName,
+        service_area: document.getElementById('serviceArea').value.trim(),
+        raw_notes: document.getElementById('rawNotes').value.trim(),
+        price_overrides: priceOverrides,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultMsg.innerHTML = `<div class="msg err">保存に失敗しました: ${data.error?.message || data.error || '不明なエラー'}</div>`;
+      return;
+    }
+    const shareUrl = `${location.origin}${location.pathname.replace('admin.html', '')}?biz=${encodeURIComponent(slug)}`;
+    resultMsg.innerHTML = `
+      <div class="msg ok">保存しました。以下のURLをお客様にご案内してください。</div>
+      <div class="share-url">${shareUrl}</div>
+    `;
+  } catch (err) {
+    resultMsg.innerHTML = '<div class="msg err">通信エラーが発生しました。時間をおいて再度お試しください。</div>';
+  }
+});
+</script>
+</body>
+</html>

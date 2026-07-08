@@ -170,16 +170,79 @@ const chatArea = document.getElementById('chatArea');
 const chipArea = document.getElementById('chipArea');
 const textInput = document.getElementById('textInput');
 
+const EDGE_URL = 'https://sfhtvtcmgueystyuhzvd.supabase.co/functions/v1/housecleaning-agent';
+
 const state = {
   mode: 'selectType',   // 'selectType' → 'hearing' → 'done'
   businessTypeKey: null,
   step: 0,
   answers: {},
   freeNotes: [],
-  images: null
+  images: null,
+  businessSlug: new URLSearchParams(location.search).get('biz'), // ?biz=業者ID
+  businessProfile: null   // 業者プロフィール(料金上書き・対応エリア・資料テキスト)
 };
 
 let config = null; // 業種選択後にBUSINESS_TYPES[key]がセットされる
+
+// 業者プロフィール(料金上書き・対応エリア・資料テキスト)をURLの?biz=から読み込む
+async function loadBusinessProfile() {
+  if (!state.businessSlug) return;
+  try {
+    const res = await fetch(EDGE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'get_profile', business_slug: state.businessSlug }),
+    });
+    const data = await res.json();
+    if (data.profile) {
+      state.businessProfile = data.profile;
+      const logo = document.querySelector('#header .logo');
+      if (logo) logo.textContent = data.profile.business_name;
+    }
+  } catch (err) {
+    // プロフィール取得に失敗しても標準設定でチャットは継続する
+  }
+}
+
+// お客様からの自由な質問(対応エリア・料金の詳細など)にAIが回答する。
+// 業者プロフィール(対応エリア・資料テキスト)があればそれを踏まえて回答する。
+function isQuestionLike(text) {
+  return /[??]$/.test(text) || /(ですか|でしょうか|ますか|いくら|何時|どこ|できます|可能)/.test(text);
+}
+
+async function askBusinessAI(question) {
+  const loadingId = `ai-loading-${Date.now()}`;
+  const loadingMsg = document.createElement('div');
+  loadingMsg.className = 'msg bot';
+  loadingMsg.id = loadingId;
+  loadingMsg.innerHTML = '<div class="bubble">考えています…</div>';
+  chatArea.appendChild(loadingMsg);
+  chatArea.scrollTop = chatArea.scrollHeight;
+
+  try {
+    const res = await fetch(EDGE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'chat',
+        business_slug: state.businessSlug,
+        question,
+        business_type_label: config?.label,
+      }),
+    });
+    const data = await res.json();
+    document.getElementById(loadingId)?.remove();
+    if (!res.ok || !data.answer) {
+      addMessage('申し訳ございません、うまくお答えできませんでした。担当者に直接ご確認ください。', 'bot');
+      return;
+    }
+    addMessage(data.answer, 'bot');
+  } catch (err) {
+    document.getElementById(loadingId)?.remove();
+    addMessage('通信エラーが発生しました。時間をおいて再度お試しください。', 'bot');
+  }
+}
 
 function addMessage(text, sender) {
   const msg = document.createElement('div');
@@ -285,8 +348,18 @@ function handleFreeText() {
   state.freeNotes.push(text);
   textInput.value = '';
 
+  // 質問らしき自由入力(「〜ですか?」「対応エリアは?」等)はAIチャットに回す。
+  // ただし業種未選択(selectType)で、かつ業種のキーワードとして解釈できる場合は業種選択を優先する。
+  const looksLikeQuestion = isQuestionLike(text);
+  const detectedType = state.mode === 'selectType' ? detectBusinessType(text) : null;
+
+  if (looksLikeQuestion && !(state.mode === 'selectType' && detectedType)) {
+    askBusinessAI(text);
+    return;
+  }
+
   if (state.mode === 'selectType') {
-    const key = detectBusinessType(text);
+    const key = detectedType;
     if (!key) {
       addMessage('恐れ入りますが、上のボタンからサービスの種類を選んでいただけますか?', 'bot');
       return;
@@ -318,11 +391,16 @@ textInput.addEventListener('keydown', (e) => {
 
 function estimateCost(answers) {
   const { baseFee, perTsuboFee, multiplier } = config.costModel;
+  // 業者プロフィールに料金上書きがあれば優先する
+  const override = state.businessProfile?.price_overrides?.[state.businessTypeKey];
+  const effectiveBaseFee = override?.baseFee ?? baseFee;
+  const effectivePerTsuboFee = override?.perTsuboFee ?? perTsuboFee;
+
   const sizeAnswer = answers[config.sizeQuestionId];
   const multiplierAnswer = answers[config.multiplierQuestionId];
   const tsubo = ROOM_SIZE_TSUBO[sizeAnswer] || 15;
   const m = multiplier[multiplierAnswer] ?? 1.0;
-  const raw = (baseFee + perTsuboFee * tsubo) * m;
+  const raw = (effectiveBaseFee + effectivePerTsuboFee * tsubo) * m;
   // 100円単位で丸め
   return Math.round(raw / 100) * 100;
 }
@@ -413,7 +491,6 @@ async function generatePDF(triggerBtn) {
 // ── ビフォーアフター画像生成 ──
 // 認証(アカウント管理)は開発部引き継ぎ範囲のため、匿名のdevice_idのみで
 // Supabase Edge Function(housecleaning-agent)の月間利用回数を制御する。
-const EDGE_URL = 'https://sfhtvtcmgueystyuhzvd.supabase.co/functions/v1/housecleaning-agent';
 
 function getDeviceId() {
   let id = localStorage.getItem('hc_device_id');
@@ -561,9 +638,17 @@ function resetFlow() {
 // 自由入力で「やり直し」等のキーワードが入力された場合もリセットとして扱う
 const RESET_KEYWORDS = ['やり直し', 'やりなおし', 'リセット', '最初から'];
 
-// 初期メッセージ
-addMessage('こんにちは!ご相談内容についていくつか質問させてください。', 'bot');
-askBusinessTypeQuestion();
+// 初期化: 業者プロフィール(?biz=)があれば読み込んでからチャットを開始する
+(async function init() {
+  await loadBusinessProfile();
+  addMessage(
+    state.businessProfile
+      ? `こんにちは!${state.businessProfile.business_name}です。ご相談内容についていくつか質問させてください。`
+      : 'こんにちは!ご相談内容についていくつか質問させてください。',
+    'bot'
+  );
+  askBusinessTypeQuestion();
+})();
 </script>
 </body>
 </html>

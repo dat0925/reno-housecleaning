@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <script src="config/business-types.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
 :root{
@@ -119,6 +121,42 @@ body{
   <button id="sendBtn" onclick="handleFreeText()">↑</button>
 </div>
 
+<!-- ── PDF提案書テンプレート(画面には表示せず、html2canvasでの描画専用) ── -->
+<div id="pdfTemplate" style="display:none;">
+  <div style="width:794px;background:#ffffff;padding:56px;font-family:'DM Sans','Hiragino Sans',sans-serif;color:#1a2422;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #2f8f8a;padding-bottom:18px;margin-bottom:28px;">
+      <div>
+        <div style="font-size:22px;font-weight:600;letter-spacing:0.02em;">お見積もりご提案書</div>
+        <div style="font-size:11px;color:#93a19e;letter-spacing:0.1em;margin-top:4px;">HOUSE CLEANING PROPOSAL</div>
+      </div>
+      <div style="font-size:11px;color:#4a5654;" id="pdf-date"></div>
+    </div>
+
+    <table id="pdf-info-table" style="width:100%;border-collapse:collapse;margin-bottom:24px;"></table>
+
+    <div style="display:flex;gap:16px;margin-bottom:24px;">
+      <div style="flex:1;">
+        <div style="font-size:10px;color:#93a19e;letter-spacing:0.1em;margin-bottom:6px;">BEFORE</div>
+        <img id="pdf-before-img" style="width:100%;border-radius:8px;display:block;" />
+      </div>
+      <div style="flex:1;">
+        <div style="font-size:10px;color:#93a19e;letter-spacing:0.1em;margin-bottom:6px;">AFTER(AI生成イメージ)</div>
+        <img id="pdf-after-img" style="width:100%;border-radius:8px;display:block;" />
+      </div>
+    </div>
+
+    <div style="background:#eef8f7;border-radius:10px;padding:18px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <span style="font-size:13px;color:#4a5654;">概算お見積もり金額</span>
+      <span style="font-size:24px;font-weight:600;color:#2f8f8a;" id="pdf-amount"></span>
+    </div>
+
+    <div style="font-size:10.5px;color:#93a19e;line-height:1.7;">
+      ※本お見積もりはAIによる概算です。実際の作業内容・状態確認後に正式な金額をご案内いたします。<br>
+      ※AFTER画像はAIによる生成イメージであり、実際の仕上がりを保証するものではありません。
+    </div>
+  </div>
+</div>
+
 <script>
 /* =========================================================
    ハウスクリーニング ヒアリングチャット MVP
@@ -220,6 +258,87 @@ function estimateCost(answers) {
   return Math.round(raw / 100) * 100;
 }
 
+// blob URL(createObjectURLで作った一時URL)をPDF埋め込み用にBase64データURLへ変換する
+async function blobUrlToDataUrl(blobUrl) {
+  const res = await fetch(blobUrl);
+  const blob = await res.blob();
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// ── PDF提案書生成(RENOのgeneratePDFと同じ html2canvas → jsPDF の方式) ──
+async function generatePDF(triggerBtn) {
+  const originalLabel = triggerBtn.textContent;
+  triggerBtn.disabled = true;
+  triggerBtn.textContent = '生成中…';
+
+  try {
+    const tmpl = document.getElementById('pdfTemplate');
+    tmpl.style.display = 'block';
+
+    document.getElementById('pdf-date').textContent =
+      new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    const estimated = estimateCost(state.answers);
+    const fields = [
+      ['掃除箇所', state.answers.room_type || '—'],
+      ['広さの目安', state.answers.room_size || '—'],
+      ['気になる汚れ', state.answers.concern || '—'],
+      ['希望時期', state.answers.timing || '—'],
+    ];
+    document.getElementById('pdf-info-table').innerHTML = fields.map(([label, val]) => `
+      <tr style="border-bottom:1px solid #e5ece9;">
+        <td style="padding:9px 0;color:#93a19e;font-size:10.5px;letter-spacing:0.08em;width:130px;">${label}</td>
+        <td style="padding:9px 0;color:#1a2422;font-size:13px;font-weight:500;">${val}</td>
+      </tr>`).join('');
+
+    document.getElementById('pdf-amount').textContent = `¥${estimated.toLocaleString()}`;
+    document.getElementById('pdf-before-img').src = state.images?.before || '';
+    document.getElementById('pdf-after-img').src = state.images?.after || '';
+
+    // 画像の読み込み待ち
+    await new Promise((r) => setTimeout(r, 500));
+
+    const canvas = await html2canvas(tmpl.firstElementChild, {
+      scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff',
+      width: 794, windowWidth: 794,
+    });
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const W = 210, H = 297;
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const canvasH = (canvas.height / canvas.width) * W;
+
+    if (canvasH <= H) {
+      doc.addImage(imgData, 'JPEG', 0, 0, W, canvasH);
+    } else {
+      let srcY = 0;
+      const pageH = (H / W) * canvas.width;
+      while (srcY < canvas.height) {
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = Math.min(pageH, canvas.height - srcY);
+        pageCanvas.getContext('2d').drawImage(canvas, 0, -srcY);
+        doc.addImage(pageCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, W, H);
+        srcY += pageH;
+        if (srcY < canvas.height) doc.addPage();
+      }
+    }
+
+    doc.save(`ハウスクリーニング-お見積もり-${Date.now()}.pdf`);
+  } catch (err) {
+    alert('PDFの生成に失敗しました。時間をおいて再度お試しください。');
+  } finally {
+    triggerBtn.disabled = false;
+    triggerBtn.textContent = originalLabel;
+    document.getElementById('pdfTemplate').style.display = 'none';
+  }
+}
+
 // ── ビフォーアフター画像生成 ──
 // 認証(アカウント管理)は開発部引き継ぎ範囲のため、匿名のdevice_idのみで
 // Supabase Edge Function(housecleaning-agent)の月間利用回数を制御する。
@@ -260,6 +379,11 @@ async function generateBeforeAfter(file, promptHint, resultBox) {
     const afterB64 = data.data?.[0]?.b64_json;
     const afterUrl = afterB64 ? `data:image/png;base64,${afterB64}` : data.data?.[0]?.url;
 
+    // 生成した画像はPDF提案書でも使うのでstateに保持しておく(beforeはBase64化して保持)
+    const beforeB64Url = await blobUrlToDataUrl(beforeUrl);
+    state.images = { before: beforeB64Url, after: afterUrl };
+
+    const pdfBtnId = `pdf-btn-${Date.now()}`;
     resultBox.innerHTML = `
       <div class="ba-preview">
         <div>
@@ -271,7 +395,9 @@ async function generateBeforeAfter(file, promptHint, resultBox) {
           <img src="${afterUrl}" />
         </div>
       </div>
+      <button class="cta-btn" id="${pdfBtnId}">📄 PDF提案書を作成する</button>
     `;
+    resultBox.querySelector(`#${pdfBtnId}`).addEventListener('click', (e) => generatePDF(e.target));
   } catch (err) {
     resultBox.innerHTML = `<div class="ba-error">通信エラーが発生しました。時間をおいて再度お試しください。</div>`;
   }

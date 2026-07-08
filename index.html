@@ -210,14 +210,45 @@ function askBusinessTypeQuestion() {
   renderChips(labels);
 }
 
+// 現在のconfigの中で、まだ回答されていない最初の質問を返す(自由入力による自動入力で
+// 質問の順番が飛んでもここで吸収する)
+function nextUnansweredQuestion() {
+  return config.hearingQuestions.find(q => !(q.id in state.answers));
+}
+
 function askCurrentQuestion() {
-  const q = config.hearingQuestions[state.step];
+  const q = nextUnansweredQuestion();
   if (!q) {
     finishHearing();
     return;
   }
   addMessage(q.label, 'bot');
   renderChips(q.chips);
+}
+
+// 自由入力テキストの中に、質問のチップ(選択肢)と一致する語が含まれていれば
+// 自動的にその質問への回答として採用する(例:「キッチンの換気扇」→ room_type:「キッチン」)
+function autofillFromText(text) {
+  config.hearingQuestions.forEach(q => {
+    if (q.id in state.answers) return;
+    const matched = q.chips.find(chip => text.includes(chip));
+    if (matched) state.answers[q.id] = matched;
+  });
+}
+
+// 自由入力テキストから、どの業種の相談かをキーワードで推測する。
+// より具体的な業種(特殊清掃・遺品整理)を先に判定し、汎用的なハウスクリーニングは最後にする。
+const BUSINESS_TYPE_KEYWORDS = {
+  specialCleaning: ['特殊清掃', '孤独死', '事故死', '事故物件', '孤立死'],
+  estateCleanup: ['遺品整理', '遺品', '生前整理', '空き家'],
+  housecleaning: ['ハウスクリーニング', 'クリーニング', '掃除', '清掃', '換気扇', 'キッチン', '浴室', 'お風呂', 'トイレ']
+};
+
+function detectBusinessType(text) {
+  for (const key of Object.keys(BUSINESS_TYPE_KEYWORDS)) {
+    if (BUSINESS_TYPE_KEYWORDS[key].some(kw => text.includes(kw))) return key;
+  }
+  return null;
 }
 
 function selectChip(label) {
@@ -232,10 +263,10 @@ function selectChip(label) {
     return;
   }
 
-  const q = config.hearingQuestions[state.step];
+  const q = nextUnansweredQuestion();
+  if (!q) return;
   addMessage(label, 'user');
   state.answers[q.id] = label;
-  state.step += 1;
   chipArea.innerHTML = '';
   setTimeout(askCurrentQuestion, 300);
 }
@@ -254,15 +285,31 @@ function handleFreeText() {
   state.freeNotes.push(text);
   textInput.value = '';
 
+  if (state.mode === 'selectType') {
+    const key = detectBusinessType(text);
+    if (!key) {
+      addMessage('恐れ入りますが、上のボタンからサービスの種類を選んでいただけますか?', 'bot');
+      return;
+    }
+    state.businessTypeKey = key;
+    config = BUSINESS_TYPES[key];
+    state.mode = 'hearing';
+    autofillFromText(text); // 例:「キッチンの換気扇」→ room_typeを自動で「キッチン」に
+    chipArea.innerHTML = '';
+    setTimeout(askCurrentQuestion, 300);
+    return;
+  }
+
   if (state.mode !== 'hearing') return;
 
-  // 現在の質問にチップ以外の回答(自由入力)があった場合はそのまま回答として採用する
-  const q = config.hearingQuestions[state.step];
-  if (q && !state.answers[q.id]) {
+  // 自由入力の中にチップ相当の語が含まれていれば自動採用し、
+  // 現在の質問がまだ未回答ならテキストそのものを回答として採用する
+  autofillFromText(text);
+  const q = nextUnansweredQuestion();
+  if (q && !(q.id in state.answers)) {
     state.answers[q.id] = text;
-    state.step += 1;
-    setTimeout(askCurrentQuestion, 300);
   }
+  setTimeout(askCurrentQuestion, 300);
 }
 
 textInput.addEventListener('keydown', (e) => {

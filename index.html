@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>ハウスクリーニング AI見積もり</title>
+<meta name="theme-color" content="#2f8f8a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<script src="config/business-types.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
+:root{
+  --bg:#f6faf9;--bg2:#eef5f4;
+  --white:#ffffff;
+  --text:#1a2422;--text2:#4a5654;--muted:#93a19e;
+  --border:#dfe9e7;--border2:#c9d8d5;
+  --teal:#2f8f8a;--teal-l:#5fb3ae;--teal-bg:#eef8f7;
+  --accent:#e8734a;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}html{height:-webkit-fill-available;}
+body{
+  background:var(--bg);font-family:'DM Sans','Hiragino Sans',sans-serif;color:var(--text);
+  display:flex;flex-direction:column;height:100vh;height:100dvh;min-height:-webkit-fill-available;
+}
+::placeholder{color:var(--muted);}
+::-webkit-scrollbar{width:3px;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+/* ── Header ── */
+#header{
+  padding:16px 20px;padding-top:max(16px, env(safe-area-inset-top));
+  background:var(--white);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;flex-shrink:0;
+}
+#header .logo{font-weight:600;font-size:16px;letter-spacing:0.02em;}
+#header .badge{font-size:10px;color:var(--teal);letter-spacing:0.1em;text-transform:uppercase;border:1px solid rgba(47,143,138,0.3);padding:2px 7px;border-radius:3px;}
+
+/* ── Chat area ── */
+#chatArea{flex:1;overflow-y:auto;padding:16px 16px 8px;display:flex;flex-direction:column;gap:12px;}
+.msg{display:flex;gap:8px;max-width:88%;}
+.msg.bot{align-self:flex-start;}
+.msg.user{align-self:flex-end;flex-direction:row-reverse;}
+.bubble{
+  padding:11px 15px;border-radius:16px;font-size:14.5px;line-height:1.55;white-space:pre-wrap;
+}
+.msg.bot .bubble{background:var(--white);border:1px solid var(--border);border-top-left-radius:4px;color:var(--text);}
+.msg.user .bubble{background:var(--teal);color:#fff;border-top-right-radius:4px;}
+
+.summary-card{
+  background:var(--white);border:1px solid var(--border2);border-radius:14px;padding:16px;
+  align-self:stretch;max-width:100%;
+}
+.summary-card h3{font-size:13px;color:var(--teal);letter-spacing:0.06em;margin-bottom:10px;}
+.summary-row{display:flex;justify-content:space-between;font-size:13.5px;padding:6px 0;border-bottom:1px solid var(--bg2);}
+.summary-row:last-of-type{border-bottom:none;}
+.summary-row span:first-child{color:var(--text2);}
+.summary-total{display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1.5px solid var(--border);font-size:15px;font-weight:600;}
+.summary-total .amount{color:var(--teal);}
+.summary-note{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;}
+.cta-btn{
+  margin-top:14px;width:100%;padding:12px;border:none;border-radius:10px;
+  background:var(--teal);color:#fff;font-size:14px;font-weight:500;font-family:inherit;
+}
+
+/* ── Chips ── */
+#chipArea{padding:4px 16px 12px;display:flex;flex-wrap:wrap;gap:8px;flex-shrink:0;}
+.chip{
+  background:var(--white);border:1px solid rgba(47,143,138,0.3);border-radius:20px;
+  padding:8px 15px;font-size:13px;color:var(--teal);cursor:pointer;font-family:inherit;
+  letter-spacing:0.02em;transition:all 0.15s;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.04);
+}
+.chip:active{transform:scale(0.96);background:var(--teal-bg);}
+
+/* ── Input bar ── */
+#inputBar{
+  display:flex;gap:8px;padding:10px 16px;padding-bottom:max(10px, env(safe-area-inset-bottom));
+  background:var(--white);border-top:1px solid var(--border);flex-shrink:0;
+}
+#textInput{
+  flex:1;border:1px solid var(--border2);border-radius:20px;padding:10px 16px;
+  font-size:14px;font-family:inherit;background:var(--bg2);
+}
+#sendBtn{
+  width:40px;height:40px;border-radius:50%;border:none;background:var(--teal);color:#fff;
+  font-size:16px;flex-shrink:0;
+}
+#sendBtn:disabled{opacity:0.4;}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div class="logo">クリーンAI見積もり</div>
+  <div class="badge">Beta</div>
+</div>
+
+<div id="chatArea"></div>
+<div id="chipArea"></div>
+
+<div id="inputBar">
+  <input id="textInput" type="text" placeholder="気になることがあれば自由に入力できます" />
+  <button id="sendBtn" onclick="handleFreeText()">↑</button>
+</div>
+
+<script>
+/* =========================================================
+   ハウスクリーニング ヒアリングチャット MVP
+   business-types.js の設定を元に、質問→チップ回答→次の質問…と進行し、
+   最後に概算見積もりのサマリーを表示する。
+   AI連携(自然文解析・画像生成・PDF出力)は次フェーズで追加予定。
+   ========================================================= */
+
+const BUSINESS_TYPE_KEY = 'housecleaning';
+const config = BUSINESS_TYPES[BUSINESS_TYPE_KEY];
+
+const chatArea = document.getElementById('chatArea');
+const chipArea = document.getElementById('chipArea');
+const textInput = document.getElementById('textInput');
+
+const state = {
+  step: 0,
+  answers: {},       // { room_type: 'キッチン', room_size: '2LDK', ... }
+  freeNotes: []       // 自由入力で補足されたテキストをすべて保持
+};
+
+// 部屋の広さ(チップのラベル)→ 概算坪数のマッピング。
+// 見積もりロジックの簡易版。実際の単価・係数はconfigのcostModelで一元管理する。
+const ROOM_SIZE_TSUBO = {
+  '1R/1K': 8,
+  '1LDK': 15,
+  '2LDK': 25,
+  '3LDK以上': 35
+};
+
+function addMessage(text, sender) {
+  const msg = document.createElement('div');
+  msg.className = `msg ${sender}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  msg.appendChild(bubble);
+  chatArea.appendChild(msg);
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function renderChips(chips) {
+  chipArea.innerHTML = '';
+  if (!chips || chips.length === 0) return;
+  chips.forEach(label => {
+    const btn = document.createElement('button');
+    btn.className = 'chip';
+    btn.textContent = label;
+    btn.onclick = () => selectChip(label);
+    chipArea.appendChild(btn);
+  });
+}
+
+function askCurrentQuestion() {
+  const q = config.hearingQuestions[state.step];
+  if (!q) {
+    finishHearing();
+    return;
+  }
+  addMessage(q.label, 'bot');
+  renderChips(q.chips);
+}
+
+function selectChip(label) {
+  const q = config.hearingQuestions[state.step];
+  addMessage(label, 'user');
+  state.answers[q.id] = label;
+  state.step += 1;
+  chipArea.innerHTML = '';
+  setTimeout(askCurrentQuestion, 300);
+}
+
+function handleFreeText() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  addMessage(text, 'user');
+  state.freeNotes.push(text);
+  textInput.value = '';
+
+  // 現在の質問にチップ以外の回答(自由入力)があった場合はそのまま回答として採用する
+  const q = config.hearingQuestions[state.step];
+  if (q && !state.answers[q.id]) {
+    state.answers[q.id] = text;
+    state.step += 1;
+    setTimeout(askCurrentQuestion, 300);
+  }
+}
+
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') handleFreeText();
+});
+
+function estimateCost(answers) {
+  const { baseFee, perTsuboFee, concernMultiplier } = config.costModel;
+  const tsubo = ROOM_SIZE_TSUBO[answers.room_size] || 15;
+  const multiplier = concernMultiplier[answers.concern] ?? 1.0;
+  const raw = (baseFee + perTsuboFee * tsubo) * multiplier;
+  // 100円単位で丸め
+  return Math.round(raw / 100) * 100;
+}
+
+function finishHearing() {
+  addMessage('ありがとうございます、内容をもとに概算お見積もりを作成しますね。', 'bot');
+
+  const estimated = estimateCost(state.answers);
+
+  const card = document.createElement('div');
+  card.className = 'summary-card';
+  card.innerHTML = `
+    <h3>概算お見積もり</h3>
+    <div class="summary-row"><span>掃除箇所</span><span>${state.answers.room_type || '-'}</span></div>
+    <div class="summary-row"><span>広さの目安</span><span>${state.answers.room_size || '-'}</span></div>
+    <div class="summary-row"><span>気になる汚れ</span><span>${state.answers.concern || '-'}</span></div>
+    <div class="summary-row"><span>希望時期</span><span>${state.answers.timing || '-'}</span></div>
+    <div class="summary-total"><span>概算費用</span><span class="amount">¥${estimated.toLocaleString()}</span></div>
+    <div class="summary-note">※実際の状態を確認後、正式なお見積もりをご案内します。ビフォーアフターイメージ・PDF提案書は次のステップでご案内予定です。</div>
+    <button class="cta-btn" disabled>ビフォーアフターイメージを見る(準備中)</button>
+  `;
+  chatArea.appendChild(card);
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+// 初期メッセージ
+addMessage('こんにちは!ハウスクリーニングのご相談ですね。いくつか質問させてください。', 'bot');
+askCurrentQuestion();
+</script>
+</body>
+</html>

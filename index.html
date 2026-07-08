@@ -185,6 +185,20 @@ const state = {
 
 let config = null; // 業種選択後にBUSINESS_TYPES[key]がセットされる
 
+// 見積もり完了を業者単位でログする(ソフト制限。上限超過でも顧客体験はブロックしない)
+async function logQuoteCompletion() {
+  if (!state.businessSlug) return;
+  try {
+    await fetch(EDGE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'log_quote', business_slug: state.businessSlug }),
+    });
+  } catch (err) {
+    // ログ失敗は顧客体験に影響させない
+  }
+}
+
 // 業者プロフィール(料金上書き・対応エリア・資料テキスト)をURLの?biz=から読み込む
 async function loadBusinessProfile() {
   if (!state.businessSlug) return;
@@ -510,13 +524,16 @@ async function generateBeforeAfter(file, promptHint, resultBox) {
     const form = new FormData();
     form.append('device_id', getDeviceId());
     form.append('prompt', promptHint);
+    if (state.businessSlug) form.append('business_slug', state.businessSlug);
     form.append('image', file);
 
     const res = await fetch(EDGE_URL, { method: 'POST', body: form });
     const data = await res.json();
 
     if (!res.ok) {
-      if (data.error === 'limit_exceeded') {
+      if (data.error === 'limit_exceeded' && data.reason === 'business_plan') {
+        resultBox.innerHTML = `<div class="ba-error">今月のビフォーアフター画像生成の上限(${data.limit}回・${data.plan}プラン)に達しました。担当者にご確認ください。</div>`;
+      } else if (data.error === 'limit_exceeded') {
         resultBox.innerHTML = `<div class="ba-error">今月の無料生成回数(${data.limit}回)の上限に達しました。来月またお試しください。</div>`;
       } else {
         resultBox.innerHTML = `<div class="ba-error">画像生成に失敗しました。時間をおいて再度お試しください。</div>`;
@@ -555,6 +572,7 @@ async function generateBeforeAfter(file, promptHint, resultBox) {
 function finishHearing() {
   state.mode = 'done';
   addMessage('ありがとうございます、内容をもとに概算お見積もりを作成しますね。', 'bot');
+  logQuoteCompletion(); // 業者側の月間見積もり件数カウント(プラン上限判定用、ソフト制限)
 
   const estimated = estimateCost(state.answers);
   const summaryRows = config.hearingQuestions
